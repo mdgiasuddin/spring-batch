@@ -25,7 +25,7 @@ public class JobController {
     @PostMapping("/import-people")
     public void importPeopleFromCSV() {
         JobParameters jobParameters = new JobParametersBuilder()
-            .addLong("staredAt", System.currentTimeMillis())
+            .addLong("startedAt", System.currentTimeMillis())
             .toJobParameters();
 
         try {

@@ -1,14 +1,16 @@
 package com.example.springbatch.config;
 
 import com.example.springbatch.entity.Person;
-import com.example.springbatch.repository.PersonRepository;
+import com.example.springbatch.partition.RangePartitioner;
 import lombok.RequiredArgsConstructor;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.configuration.annotation.EnableBatchProcessing;
 import org.springframework.batch.core.configuration.annotation.JobBuilderFactory;
 import org.springframework.batch.core.configuration.annotation.StepBuilderFactory;
-import org.springframework.batch.item.data.RepositoryItemWriter;
+import org.springframework.batch.core.partition.PartitionHandler;
+import org.springframework.batch.core.partition.support.Partitioner;
+import org.springframework.batch.core.partition.support.TaskExecutorPartitionHandler;
 import org.springframework.batch.item.file.FlatFileItemReader;
 import org.springframework.batch.item.file.LineMapper;
 import org.springframework.batch.item.file.mapping.BeanWrapperFieldSetMapper;
@@ -17,8 +19,8 @@ import org.springframework.batch.item.file.transform.DelimitedLineTokenizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.FileSystemResource;
-import org.springframework.core.task.SimpleAsyncTaskExecutor;
 import org.springframework.core.task.TaskExecutor;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 @Configuration
 @EnableBatchProcessing
@@ -27,7 +29,11 @@ public class SpringBatchConfig {
 
     private final JobBuilderFactory jobBuilderFactory;
     private final StepBuilderFactory stepBuilderFactory;
-    private final PersonRepository personRepository;
+    private final PersonWriter personWriter;
+
+    private static final int GRID_SIZE = 2;
+    private static final int POOL_SIZE = 4;
+    private static final int CHUNK_SIZE = 500;
 
     @Bean
     FlatFileItemReader<Person> reader() {
@@ -63,36 +69,51 @@ public class SpringBatchConfig {
     }
 
     @Bean
-    public RepositoryItemWriter<Person> writer() {
-        RepositoryItemWriter<Person> itemWriter = new RepositoryItemWriter<>();
-        itemWriter.setRepository(personRepository);
-        itemWriter.setMethodName("save");
-        return itemWriter;
+    public Step masterStep() {
+        return stepBuilderFactory.get("MASTER-STEP-CSV-TO-ENTITY")
+            .partitioner(slaveStep().getName(), partitioner())
+            .partitionHandler(partitionHandler())
+            .build();
     }
 
     @Bean
-    public Step step() {
-        return stepBuilderFactory.get("STEP-CSV-TO-ENTITY")
-            .<Person, Person>chunk(100)
+    public Step slaveStep() {
+        return stepBuilderFactory.get("SLAVE-STEP-CSV-TO-ENTITY")
+            .<Person, Person>chunk(CHUNK_SIZE)
             .reader(reader())
             .processor(processor())
-            .writer(writer())
-            .taskExecutor(taskExecutor())
+            .writer(personWriter)
             .build();
+    }
+
+    @Bean
+    public Partitioner partitioner() {
+        return new RangePartitioner();
+    }
+
+    @Bean
+    public PartitionHandler partitionHandler() {
+        TaskExecutorPartitionHandler partitionHandler = new TaskExecutorPartitionHandler();
+        partitionHandler.setGridSize(GRID_SIZE);
+        partitionHandler.setTaskExecutor(taskExecutor());
+        partitionHandler.setStep(slaveStep());
+        return partitionHandler;
     }
 
     @Bean
     public Job job() {
         return jobBuilderFactory.get("JOB-CSV-TO-ENTITY")
-            .flow(step())
+            .flow(masterStep())
             .end().build();
     }
 
     @Bean
     public TaskExecutor taskExecutor() {
-        SimpleAsyncTaskExecutor asyncTaskExecutor = new SimpleAsyncTaskExecutor();
-        asyncTaskExecutor.setConcurrencyLimit(20);
-        return asyncTaskExecutor;
+        ThreadPoolTaskExecutor taskExecutor = new ThreadPoolTaskExecutor();
+        taskExecutor.setMaxPoolSize(POOL_SIZE);
+        taskExecutor.setCorePoolSize(POOL_SIZE);
+        taskExecutor.setQueueCapacity(POOL_SIZE);
+        return taskExecutor;
     }
 }
 
